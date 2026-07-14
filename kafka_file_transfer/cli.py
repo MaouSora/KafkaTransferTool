@@ -1,4 +1,4 @@
-"""命令行入口：仅选择 send/receive，其余全部由配置文件提供。"""
+"""命令行入口：仅选择 send/receive，其余全部由 Python 配置模块提供。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .receiver import FileReceiver
 from .sender import FileSender
 from .version import APP_NAME
 
-DEFAULT_CONFIG_PATH = "config.yaml"
+DEFAULT_CONFIG_PATH = "settings.py"
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog=APP_NAME,
         description=(
             "通过 Kafka 指定 Topic 发送/接收文件（支持 zip、h5 等常见格式）。"
-            "所有运行参数均在配置文件中设置。"
+            "所有运行参数均在 Python 配置模块（settings.py）中设置。"
         ),
     )
     parser.add_argument(
@@ -35,18 +35,17 @@ def build_parser() -> argparse.ArgumentParser:
         "-c",
         "--config",
         default=DEFAULT_CONFIG_PATH,
-        help=f"YAML 配置文件路径（默认: {DEFAULT_CONFIG_PATH}）",
+        help=f"Python 配置模块路径（默认: {DEFAULT_CONFIG_PATH}）",
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("send", help="按配置文件发送文件")
-    sub.add_parser("receive", help="按配置文件接收文件")
+    sub.add_parser("send", help="按配置模块发送文件")
+    sub.add_parser("receive", help="按配置模块接收文件")
     return parser
 
 
 def cmd_send(cfg: AppConfig) -> int:
     if cfg.send is None:
-        raise ConfigError("发送模式需要配置 send.file")
-
+        raise ConfigError("发送模式需要配置 SEND['file']（或 Send.file）")
     file_path = Path(cfg.send.file).expanduser()
     logger.info(
         "准备发送 file=%s topic=%s brokers=%s chunk_size=%s",
@@ -93,7 +92,7 @@ def cmd_send(cfg: AppConfig) -> int:
 
 def cmd_receive(cfg: AppConfig) -> int:
     if cfg.receive is None:
-        raise ConfigError("接收模式需要配置 receive.output_dir 等接收参数")
+        raise ConfigError("接收模式需要配置 RECEIVE（或 Receive）段，至少包含 output_dir")
 
     recv = cfg.receive
     logger.info(

@@ -10,13 +10,13 @@ from kafka_file_transfer.version import __version__
 
 def test_parser_config_only():
     parser = build_parser()
-    send_args = parser.parse_args(["-c", "my.yaml", "send"])
+    send_args = parser.parse_args(["-c", "my_settings.py", "send"])
     assert send_args.command == "send"
-    assert send_args.config == "my.yaml"
+    assert send_args.config == "my_settings.py"
 
     recv_args = parser.parse_args(["receive"])
     assert recv_args.command == "receive"
-    assert recv_args.config == "config.yaml"
+    assert recv_args.config == "settings.py"
 
 
 def test_parser_rejects_old_flags():
@@ -34,25 +34,21 @@ def test_version_option(capsys):
 
 
 def test_setup_logging_file(tmp_path: Path):
-    cfg_path = tmp_path / "c.yaml"
     log_file = tmp_path / "app.log"
+    cfg_path = tmp_path / "settings.py"
     cfg_path.write_text(
-        f"""
-version: "{__version__}"
-kafka:
-  brokers: "localhost:9092"
-  topic: "t"
-transfer:
-  chunk_size: 1024
-send:
-  file: "./a.zip"
-receive:
-  output_dir: "./out"
-logging:
-  level: INFO
-  console: false
-  file: "{log_file.as_posix()}"
-""",
+        f'''
+VERSION = "{__version__}"
+KAFKA = {{"brokers": "localhost:9092", "topic": "t"}}
+TRANSFER = {{"chunk_size": 1024}}
+SEND = {{"file": "./a.zip"}}
+RECEIVE = {{"output_dir": "./out"}}
+LOGGING = {{
+    "level": "INFO",
+    "console": False,
+    "file": r"{log_file.as_posix()}",
+}}
+''',
         encoding="utf-8",
     )
     cfg = load_config(cfg_path)

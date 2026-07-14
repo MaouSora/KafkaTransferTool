@@ -1,12 +1,13 @@
-"""配置文件加载与校验。所有运行参数均来自 YAML 配置。"""
+"""配置加载与校验。所有运行参数均来自 Python 配置模块（settings.py）。"""
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Any
-
-import yaml
 
 from .chunker import DEFAULT_CHUNK_SIZE
 from .version import __version__
@@ -57,7 +58,6 @@ class LoggingConfig:
     file: str | None = "./logs/kafka-file-transfer.log"
     max_bytes: int = 10 * 1024 * 1024
     backup_count: int = 5
-    # 降低第三方库噪音
     quiet_loggers: tuple[str, ...] = ("kafka", "urllib3")
 
 
@@ -78,12 +78,34 @@ class AppConfig:
         return __version__
 
 
+_SECTION_ALIASES = {
+    "kafka": ("KAFKA", "Kafka"),
+    "transfer": ("TRANSFER", "Transfer"),
+    "send": ("SEND", "Send"),
+    "receive": ("RECEIVE", "Receive"),
+    "logging": ("LOGGING", "Logging"),
+}
+
+
 def _as_dict(value: Any, name: str) -> dict[str, Any]:
     if value is None:
         return {}
-    if not isinstance(value, dict):
-        raise ConfigError(f"配置项 '{name}' 必须是映射对象")
-    return value
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, type):
+        return {
+            k: v
+            for k, v in vars(value).items()
+            if not k.startswith("_") and not callable(v)
+        }
+    # class instance / SimpleNamespace / 普通对象
+    if hasattr(value, "__dict__"):
+        return {
+            k: v
+            for k, v in vars(value).items()
+            if not k.startswith("_") and not callable(v)
+        }
+    raise ConfigError(f"配置项 '{name}' 必须是 dict 或 class")
 
 
 def _require_str(data: dict[str, Any], key: str, section: str) -> str:
@@ -111,23 +133,79 @@ def _optional_float(data: dict[str, Any], key: str, default: float) -> float:
         raise ConfigError(f"配置项 '{key}' 必须是数字") from exc
 
 
+def _load_module(path: Path) -> ModuleType:
+    if path.suffix != ".py":
+        raise ConfigError(f"配置必须是 Python 文件（.py）: {path}")
+    module_name = f"kft_user_settings_{abs(hash(str(path)))}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ConfigError(f"无法加载配置模块: {path}")
+    module = importlib.util.module_from_spec(spec)
+    # 允许配置文件内使用相对路径时基于其所在目录
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise ConfigError(f"执行配置模块失败: {path}: {exc}") from exc
+    return module
+
+
+def _section_from_module(module: ModuleType, section: str) -> Any:
+    for name in _SECTION_ALIASES[section]:
+        if hasattr(module, name):
+            return getattr(module, name)
+    return None
+
+
+def module_to_raw(module: ModuleType) -> dict[str, Any]:
+    """将 Python 配置模块转为内部统一字典结构。"""
+    raw: dict[str, Any] = {}
+    version = getattr(module, "VERSION", None)
+    if version is None:
+        version = getattr(module, "version", None)
+    if version is not None:
+        raw["version"] = version
+
+    for section in _SECTION_ALIASES:
+        value = _section_from_module(module, section)
+        if value is not None:
+            raw[section] = _as_dict(value, section)
+
+    # 兼容扁平字段（直接写在模块顶层）
+    for key in (
+        "brokers",
+        "topic",
+        "chunk_size",
+        "file",
+        "output_dir",
+        "group_id",
+        "idle_timeout",
+        "max_files",
+        "auto_offset_reset",
+        "from_beginning",
+    ):
+        if hasattr(module, key) and key not in raw:
+            raw[key] = getattr(module, key)
+        upper = key.upper()
+        if hasattr(module, upper) and key not in raw:
+            raw[key] = getattr(module, upper)
+
+    return raw
+
+
 def load_raw_config(path: str | Path) -> dict[str, Any]:
     config_path = Path(path).expanduser().resolve()
     if not config_path.is_file():
         raise ConfigError(f"配置文件不存在: {config_path}")
-    with config_path.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise ConfigError("配置文件根节点必须是映射对象")
-    return data
+    module = _load_module(config_path)
+    return module_to_raw(module)
 
 
 def parse_config(data: dict[str, Any], *, path: Path | None = None) -> AppConfig:
-    """解析并校验配置字典。支持分层结构，也兼容旧版扁平字段。"""
+    """解析并校验配置字典。"""
     config_version = str(data.get("version") or __version__)
 
     kafka_raw = _as_dict(data.get("kafka"), "kafka")
-    # 兼容旧扁平配置
     if "brokers" in data and "brokers" not in kafka_raw:
         kafka_raw["brokers"] = data["brokers"]
     if "topic" in data and "topic" not in kafka_raw:
@@ -180,7 +258,7 @@ def parse_config(data: dict[str, Any], *, path: Path | None = None) -> AppConfig
         if max_files is not None:
             max_files = int(max_files)
             if max_files <= 0:
-                raise ConfigError("receive.max_files 必须为正整数，或不配置/设为 null")
+                raise ConfigError("receive.max_files 必须为正整数，或不配置/设为 None")
         receive = ReceiveConfig(
             output_dir=_require_str(receive_raw, "output_dir", "receive"),
             group_id=str(receive_raw.get("group_id") or "kafka-file-transfer-receiver"),
@@ -195,7 +273,7 @@ def parse_config(data: dict[str, Any], *, path: Path | None = None) -> AppConfig
     elif isinstance(quiet, (list, tuple)):
         quiet_tuple = tuple(str(x) for x in quiet)
     else:
-        raise ConfigError("logging.quiet_loggers 必须是字符串列表")
+        raise ConfigError("logging.quiet_loggers 必须是字符串列表/元组")
 
     logging_cfg = LoggingConfig(
         level=str(logging_raw.get("level", "INFO")).upper(),

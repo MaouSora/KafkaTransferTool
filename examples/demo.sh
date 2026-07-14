@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 本地快速演示：生成样例文件与可运行配置
+# 本地快速演示：生成样例文件与可运行 Python 配置
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,38 +24,41 @@ print(f"created: {zip_path}")
 print(f"created: {h5_path}")
 PY
 
-SEND_CFG="$ROOT/examples/config.send.yaml"
-RECV_CFG="$ROOT/examples/config.receive.yaml"
+SEND_CFG="$ROOT/examples/settings_send.py"
+RECV_CFG="$ROOT/examples/settings_receive.py"
 
 cat > "$SEND_CFG" <<EOF
-version: "1.0.0"
-kafka:
-  brokers: "localhost:9092"
-  topic: "file-transfer"
-transfer:
-  chunk_size: 524288
-send:
-  file: "$DATA/sample.zip"
-logging:
-  level: INFO
-  console: true
-  file: "$ROOT/logs/send.log"
+VERSION = "1.0.0"
+KAFKA = {
+    "brokers": "localhost:9092",
+    "topic": "file-transfer",
+}
+TRANSFER = {"chunk_size": 524288}
+SEND = {"file": r"$DATA/sample.zip"}
+LOGGING = {
+    "level": "INFO",
+    "console": True,
+    "file": r"$ROOT/logs/send.log",
+}
 EOF
 
 cat > "$RECV_CFG" <<EOF
-version: "1.0.0"
-kafka:
-  brokers: "localhost:9092"
-  topic: "file-transfer"
-receive:
-  output_dir: "$ROOT/received"
-  group_id: "kafka-file-transfer-demo"
-  idle_timeout: 0
-  auto_offset_reset: earliest
-logging:
-  level: INFO
-  console: true
-  file: "$ROOT/logs/receive.log"
+VERSION = "1.0.0"
+KAFKA = {
+    "brokers": "localhost:9092",
+    "topic": "file-transfer",
+}
+RECEIVE = {
+    "output_dir": r"$ROOT/received",
+    "group_id": "kafka-file-transfer-demo",
+    "idle_timeout": 0,
+    "auto_offset_reset": "earliest",
+}
+LOGGING = {
+    "level": "INFO",
+    "console": True,
+    "file": r"$ROOT/logs/receive.log",
+}
 EOF
 
 cat <<EOF

@@ -8,8 +8,8 @@ build/
 .received/
 received/
 logs/
-config.yaml
+settings.py
 examples/sample-data/
-examples/config.send.yaml
-examples/config.receive.yaml
+examples/settings_send.py
+examples/settings_receive.py
 .DS_Store

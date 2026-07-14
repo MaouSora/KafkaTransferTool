@@ -6,52 +6,80 @@ from kafka_file_transfer.config import ConfigError, load_config, parse_config
 from kafka_file_transfer.version import __version__
 
 
-FULL_CONFIG = """
-version: "1.0.0"
-kafka:
-  brokers: "localhost:9092"
-  topic: "file-transfer"
-  send_timeout: 30
-transfer:
-  chunk_size: 1024
-send:
-  file: "./a.zip"
-receive:
-  output_dir: "./out"
-  group_id: "g1"
-  idle_timeout: 0
-  max_files: 2
-  auto_offset_reset: latest
-logging:
-  level: DEBUG
-  console: true
-  file: null
-"""
+def _write_settings(path: Path, body: str) -> Path:
+    path.write_text(body, encoding="utf-8")
+    return path
 
 
-def test_parse_full_config():
-    cfg = parse_config(__import__("yaml").safe_load(FULL_CONFIG))
+DICT_SETTINGS = '''
+VERSION = "1.0.0"
+KAFKA = {
+    "brokers": "localhost:9092",
+    "topic": "file-transfer",
+    "send_timeout": 30,
+}
+TRANSFER = {"chunk_size": 1024}
+SEND = {"file": "./a.zip"}
+RECEIVE = {
+    "output_dir": "./out",
+    "group_id": "g1",
+    "idle_timeout": 0,
+    "max_files": 2,
+    "auto_offset_reset": "latest",
+}
+LOGGING = {"level": "DEBUG", "console": True, "file": None}
+'''
+
+
+CLASS_SETTINGS = '''
+VERSION = "1.0.0"
+
+class Kafka:
+    brokers = "b:9092"
+    topic = "tt"
+
+class Transfer:
+    chunk_size = 2048
+
+class Send:
+    file = "x.h5"
+
+class Receive:
+    output_dir = "./r"
+    auto_offset_reset = "earliest"
+
+class Logging:
+    level = "INFO"
+    console = True
+    file = None
+'''
+
+
+def test_load_dict_settings(tmp_path: Path):
+    path = _write_settings(tmp_path / "settings.py", DICT_SETTINGS)
+    cfg = load_config(path)
     assert cfg.app_version == __version__
     assert cfg.config_version == "1.0.0"
+    assert cfg.path == path.resolve()
     assert cfg.kafka.brokers == "localhost:9092"
-    assert cfg.kafka.topic == "file-transfer"
     assert cfg.kafka.send_timeout == 30
     assert cfg.transfer.chunk_size == 1024
     assert cfg.send is not None and cfg.send.file == "./a.zip"
     assert cfg.receive is not None
-    assert cfg.receive.output_dir == "./out"
     assert cfg.receive.max_files == 2
     assert cfg.receive.auto_offset_reset == "latest"
     assert cfg.logging.level == "DEBUG"
     assert cfg.logging.file is None
 
 
-def test_load_config_file(tmp_path: Path):
-    path = tmp_path / "config.yaml"
-    path.write_text(FULL_CONFIG, encoding="utf-8")
+def test_load_class_settings(tmp_path: Path):
+    path = _write_settings(tmp_path / "class_settings.py", CLASS_SETTINGS)
     cfg = load_config(path)
-    assert cfg.path == path.resolve()
-    assert cfg.kafka.topic == "file-transfer"
+    assert cfg.kafka.brokers == "b:9092"
+    assert cfg.transfer.chunk_size == 2048
+    assert cfg.send is not None and cfg.send.file == "x.h5"
+    assert cfg.receive is not None
+    assert cfg.receive.auto_offset_reset == "earliest"
 
 
 def test_missing_brokers():
@@ -85,6 +113,13 @@ def test_flat_compat_config():
     assert cfg.send is not None and cfg.send.file == "x.h5"
     assert cfg.receive is not None
     assert cfg.receive.auto_offset_reset == "earliest"
+
+
+def test_reject_non_py(tmp_path: Path):
+    path = tmp_path / "c.yaml"
+    path.write_text("brokers: x\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="Python 文件"):
+        load_config(path)
 
 
 def test_logging_must_have_output():

@@ -6,7 +6,7 @@
 
 ## 特性
 
-- 配置驱动：全部运行参数写在 YAML 配置文件中
+- **Python 配置模块**：全部运行参数写在 `settings.py`（不用 YAML）
 - 单 Topic 收发：发送端与接收端共用同一个 Topic
 - 自动分片：大文件按块传输，适配 Kafka 消息大小限制（默认 512KiB/片）
 - 完整性校验：SHA256 校验，接收完成后校验大小与哈希
@@ -34,21 +34,43 @@ python -m kafka_file_transfer --version
 复制示例配置并按需修改：
 
 ```bash
-cp config.example.yaml config.yaml
+cp settings.example.py settings.py
+```
+
+支持两种写法（见 `settings.example.py`）：
+
+**dict 风格：**
+
+```python
+VERSION = "1.0.0"
+KAFKA = {"brokers": "localhost:9092", "topic": "file-transfer"}
+TRANSFER = {"chunk_size": 524288}
+SEND = {"file": "./data/sample.zip"}
+RECEIVE = {"output_dir": "./received", "idle_timeout": 0}
+LOGGING = {"level": "INFO", "console": True, "file": "./logs/app.log"}
+```
+
+**class 风格：**
+
+```python
+class Kafka:
+    brokers = "localhost:9092"
+    topic = "file-transfer"
+
+class Send:
+    file = "./data/sample.zip"
 ```
 
 主要配置段：
 
 | 段 | 说明 |
 |----|------|
-| `version` | 配置文件版本（建议与程序版本一致） |
-| `kafka` | brokers、topic、超时、acks 等 |
-| `transfer` | `chunk_size` 分片大小 |
-| `send` | 发送文件路径 `file` |
-| `receive` | 输出目录、消费组、空闲超时等 |
-| `logging` | 日志级别、格式、控制台/文件输出 |
-
-完整字段见 `config.example.yaml`。
+| `VERSION` | 配置版本（建议与程序版本一致） |
+| `KAFKA` / `Kafka` | brokers、topic、超时、acks 等 |
+| `TRANSFER` / `Transfer` | `chunk_size` 分片大小 |
+| `SEND` / `Send` | 发送文件路径 `file` |
+| `RECEIVE` / `Receive` | 输出目录、消费组、空闲超时等 |
+| `LOGGING` / `Logging` | 日志级别、格式、控制台/文件输出 |
 
 ## 快速开始
 
@@ -65,34 +87,28 @@ kafka-topics.sh --create --topic file-transfer \
 cd examples && docker compose up -d
 ```
 
-### 2. 编辑配置
+### 2. 编辑 `settings.py`
 
-在 `config.yaml` 中设置 `kafka.brokers`、`kafka.topic`，以及：
-
-- 发送：`send.file`
-- 接收：`receive.output_dir` 等
+设置 `KAFKA`，以及发送用的 `SEND` / 接收用的 `RECEIVE`。
 
 ### 3. 接收 / 发送
 
 ```bash
-# 接收（持续监听可将 receive.idle_timeout 设为 0）
-python -m kafka_file_transfer -c config.yaml receive
-
-# 发送
-python -m kafka_file_transfer -c config.yaml send
+python -m kafka_file_transfer -c settings.py receive
+python -m kafka_file_transfer -c settings.py send
 ```
 
-也可使用入口命令：
+默认即读取当前目录 `settings.py`：
 
 ```bash
-kafka-file-transfer -c config.yaml receive
-kafka-file-transfer -c config.yaml send
+python -m kafka_file_transfer receive
+python -m kafka_file_transfer send
 ```
 
 命令行只接受：
 
 - `send` / `receive`
-- `-c/--config`（默认 `config.yaml`）
+- `-c/--config`（默认 `settings.py`）
 - `--version`
 
 ### 4. 日志
@@ -100,10 +116,8 @@ kafka-file-transfer -c config.yaml send
 默认同时输出到控制台与 `./logs/kafka-file-transfer.log`（轮转）。启动时会打印类似：
 
 ```text
-kafka-file-transfer v1.0.0 启动 | command=send | config=.../config.yaml | config.version=1.0.0
+kafka-file-transfer v1.0.0 启动 | command=send | config=.../settings.py | config.version=1.0.0
 ```
-
-调试时可在配置中设置 `logging.level: DEBUG`。
 
 ## 协议概览
 
@@ -112,8 +126,6 @@ kafka-file-transfer v1.0.0 启动 | command=send | config=.../config.yaml | conf
 | `meta` | 文件名、大小、SHA256、分片数、Content-Type |
 | `chunk` | 分片二进制内容 |
 | `complete` | 发送完成标记，触发落盘与校验 |
-
-消息头字段：`kft-type`、`kft-file-id`、`kft-chunk-index`、`kft-total-chunks`。
 
 ## 本地演示
 
@@ -132,22 +144,22 @@ pytest -q
 
 ```text
 kafka_file_transfer/
-  version.py      # 版本号（单一来源）
-  config.py       # 配置加载与校验
+  version.py        # 版本号（单一来源）
+  config.py         # 加载/校验 Python 配置模块
   logging_setup.py
-  cli.py          # 命令行（仅命令 + 配置路径）
-  protocol.py     # 消息协议与校验
-  chunker.py      # 分片 / 重组
-  sender.py       # 发送端
-  receiver.py     # 接收端
-config.example.yaml
+  cli.py
+  protocol.py
+  chunker.py
+  sender.py
+  receiver.py
+settings.example.py
 examples/docker-compose.yml
 tests/
 ```
 
 ## 注意事项
 
-1. **消息大小**：默认分片 512KiB。若发送失败并提示消息过大，减小 `transfer.chunk_size` 或增大 Kafka 相关限制。
+1. **消息大小**：默认分片 512KiB。过大时减小 `TRANSFER["chunk_size"]` 或调大 Kafka 限制。
 2. **消费组**：同一 `group_id` 下消息只会被一个消费者处理。
-3. **重名文件**：目标目录已存在同名文件时，会自动保存为 `name_1.ext`…
-4. **版本**：程序版本在 `kafka_file_transfer/version.py`；配置中的 `version` 仅用于兼容提示。
+3. **重名文件**：目标目录已存在同名文件时，自动保存为 `name_1.ext`…
+4. **版本**：程序版本在 `kafka_file_transfer/version.py`；配置中的 `VERSION` 仅用于兼容提示。
