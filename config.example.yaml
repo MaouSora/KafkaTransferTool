@@ -1,0 +1,14 @@
+# Kafka 文件传输配置示例
+brokers: "localhost:9092"
+topic: "file-transfer"
+# 分片大小（字节），建议小于 Kafka message.max.bytes（默认约 1MB）
+chunk_size: 524288
+
+# 发送端
+# file: "./data/sample.zip"
+
+# 接收端
+output_dir: "./received"
+group_id: "kafka-file-transfer-receiver"
+# 空闲超时（秒）：在此时间内无新消息则退出；0 表示持续监听
+idle_timeout: 30
