@@ -1,4 +1,4 @@
-"""命令行入口。"""
+"""命令行入口：仅选择 send/receive，其余全部由配置文件提供。"""
 
 from __future__ import annotations
 
@@ -6,165 +6,179 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Any
-
-import yaml
 
 from . import __version__
-from .chunker import DEFAULT_CHUNK_SIZE
+from .config import AppConfig, ConfigError, load_config
+from .logging_setup import log_startup, setup_logging
 from .receiver import FileReceiver
 from .sender import FileSender
+from .version import APP_NAME
 
-
-def _load_config(path: str | None) -> dict[str, Any]:
-    if not path:
-        return {}
-    config_path = Path(path).expanduser().resolve()
-    if not config_path.is_file():
-        raise FileNotFoundError(f"配置文件不存在: {config_path}")
-    with config_path.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise ValueError("配置文件根节点必须是映射对象")
-    return data
-
-
-def _setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-
-def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("-c", "--config", help="YAML 配置文件路径")
-    parser.add_argument("-b", "--brokers", help="Kafka brokers，逗号分隔，如 localhost:9092")
-    parser.add_argument("-t", "--topic", help="传输使用的 Kafka topic")
-    parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
+DEFAULT_CONFIG_PATH = "config.yaml"
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kafka-file-transfer",
-        description="通过 Kafka 指定 Topic 发送/接收文件（支持 zip、h5 等常见格式）",
+        prog=APP_NAME,
+        description=(
+            "通过 Kafka 指定 Topic 发送/接收文件（支持 zip、h5 等常见格式）。"
+            "所有运行参数均在配置文件中设置。"
+        ),
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "-c",
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"YAML 配置文件路径（默认: {DEFAULT_CONFIG_PATH}）",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
-
-    send = sub.add_parser("send", help="发送文件到 Kafka topic")
-    _add_common_args(send)
-    send.add_argument("-f", "--file", help="待发送文件路径")
-    send.add_argument(
-        "--chunk-size",
-        type=int,
-        help=f"分片大小（字节），默认 {DEFAULT_CHUNK_SIZE}",
-    )
-
-    recv = sub.add_parser("receive", help="从 Kafka topic 接收文件")
-    _add_common_args(recv)
-    recv.add_argument("-o", "--output-dir", help="文件保存目录")
-    recv.add_argument("-g", "--group-id", help="Kafka 消费组 ID")
-    recv.add_argument(
-        "--idle-timeout",
-        type=float,
-        help="空闲超时秒数；0 表示持续监听，默认 30",
-    )
-    recv.add_argument(
-        "--max-files",
-        type=int,
-        default=None,
-        help="最多接收文件数后退出；默认不限制",
-    )
-    recv.add_argument(
-        "--from-beginning",
-        action="store_true",
-        help="从最早 offset 开始消费（auto_offset_reset=earliest）",
-    )
+    sub.add_parser("send", help="按配置文件发送文件")
+    sub.add_parser("receive", help="按配置文件接收文件")
     return parser
 
 
-def _require(value: Any, name: str) -> Any:
-    if value is None or value == "":
-        raise SystemExit(f"缺少必要参数: {name}")
-    return value
+def cmd_send(cfg: AppConfig) -> int:
+    if cfg.send is None:
+        raise ConfigError("发送模式需要配置 send.file")
 
-
-def cmd_send(args: argparse.Namespace, config: dict[str, Any]) -> int:
-    brokers = _require(args.brokers or config.get("brokers"), "--brokers")
-    topic = _require(args.topic or config.get("topic"), "--topic")
-    file_path = _require(args.file or config.get("file"), "--file")
-    chunk_size = args.chunk_size or int(config.get("chunk_size") or DEFAULT_CHUNK_SIZE)
+    file_path = Path(cfg.send.file).expanduser()
+    logger.info(
+        "准备发送 file=%s topic=%s brokers=%s chunk_size=%s",
+        file_path,
+        cfg.kafka.topic,
+        cfg.kafka.brokers,
+        cfg.transfer.chunk_size,
+    )
 
     def on_progress(done: int, total: int, nbytes: int) -> None:
         percent = (done / total) * 100 if total else 100.0
-        print(f"\r进度: {done}/{total} ({percent:.1f}%)", end="", flush=True)
+        if done == total or done == 1 or done % max(1, total // 10) == 0:
+            logger.info(
+                "发送进度 %s/%s (%.1f%%) chunk_bytes=%s",
+                done,
+                total,
+                percent,
+                nbytes,
+            )
 
-    with FileSender(brokers, topic, chunk_size=chunk_size) as sender:
+    with FileSender(
+        cfg.kafka.brokers,
+        cfg.kafka.topic,
+        chunk_size=cfg.transfer.chunk_size,
+        acks=cfg.kafka.acks,
+        retries=cfg.kafka.retries,
+        max_request_size=cfg.kafka.max_request_size,
+        send_timeout=cfg.kafka.send_timeout,
+        extra_producer_config=cfg.kafka.producer_extra,
+    ) as sender:
         meta = sender.send_file(file_path, progress=on_progress)
-    print()
-    print(
-        f"发送成功: {meta.filename} | size={meta.size} | "
-        f"chunks={meta.total_chunks} | sha256={meta.sha256} | file_id={meta.file_id}"
+
+    logger.info(
+        "发送成功 filename=%s size=%s chunks=%s sha256=%s file_id=%s content_type=%s",
+        meta.filename,
+        meta.size,
+        meta.total_chunks,
+        meta.sha256,
+        meta.file_id,
+        meta.content_type,
     )
     return 0
 
 
-def cmd_receive(args: argparse.Namespace, config: dict[str, Any]) -> int:
-    brokers = _require(args.brokers or config.get("brokers"), "--brokers")
-    topic = _require(args.topic or config.get("topic"), "--topic")
-    output_dir = _require(args.output_dir or config.get("output_dir"), "--output-dir")
-    group_id = args.group_id or config.get("group_id") or "kafka-file-transfer-receiver"
-    if args.idle_timeout is not None:
-        idle_timeout = args.idle_timeout
-    else:
-        idle_timeout = float(config.get("idle_timeout", 30))
-    auto_offset_reset = "earliest" if args.from_beginning else "latest"
+def cmd_receive(cfg: AppConfig) -> int:
+    if cfg.receive is None:
+        raise ConfigError("接收模式需要配置 receive.output_dir 等接收参数")
+
+    recv = cfg.receive
+    logger.info(
+        "准备接收 topic=%s brokers=%s output_dir=%s group_id=%s "
+        "idle_timeout=%s max_files=%s auto_offset_reset=%s",
+        cfg.kafka.topic,
+        cfg.kafka.brokers,
+        recv.output_dir,
+        recv.group_id,
+        recv.idle_timeout,
+        recv.max_files,
+        recv.auto_offset_reset,
+    )
 
     def on_file(path: Path, meta) -> None:
-        print(
-            f"已保存: {path} | size={meta.size} | "
-            f"type={meta.content_type} | sha256={meta.sha256}"
+        logger.info(
+            "已保存 path=%s size=%s content_type=%s sha256=%s file_id=%s",
+            path,
+            meta.size,
+            meta.content_type,
+            meta.sha256,
+            meta.file_id,
         )
 
     with FileReceiver(
-        brokers,
-        topic,
-        output_dir,
-        group_id=group_id,
-        auto_offset_reset=auto_offset_reset,
-        idle_timeout=idle_timeout,
+        cfg.kafka.brokers,
+        cfg.kafka.topic,
+        recv.output_dir,
+        group_id=recv.group_id,
+        auto_offset_reset=recv.auto_offset_reset,
+        idle_timeout=recv.idle_timeout,
+        poll_timeout_ms=cfg.kafka.poll_timeout_ms,
+        extra_consumer_config=cfg.kafka.consumer_extra,
     ) as receiver:
-        saved = receiver.receive_forever(on_file=on_file, max_files=args.max_files)
-    print(f"本次共接收 {len(saved)} 个文件")
+        saved = receiver.receive_forever(on_file=on_file, max_files=recv.max_files)
+
+    logger.info("接收结束 total_files=%s", len(saved))
     return 0
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    _setup_logging(args.verbose)
+
     try:
-        config = _load_config(args.config)
+        cfg = load_config(args.config)
+    except ConfigError as exc:
+        print(f"配置错误: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
     except Exception as exc:
         print(f"读取配置失败: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
+    app_logger = setup_logging(cfg.logging)
+    log_startup(
+        app_logger,
+        command=args.command,
+        config_path=cfg.path,
+        config_version=cfg.config_version,
+    )
+    if cfg.config_version != cfg.app_version:
+        app_logger.warning(
+            "配置文件 version=%s 与程序版本 %s 不一致，请确认配置兼容性",
+            cfg.config_version,
+            cfg.app_version,
+        )
+
     try:
         if args.command == "send":
-            code = cmd_send(args, config)
+            code = cmd_send(cfg)
         elif args.command == "receive":
-            code = cmd_receive(args, config)
+            code = cmd_receive(cfg)
         else:
             parser.error(f"未知命令: {args.command}")
             code = 2
+    except ConfigError as exc:
+        logger.error("配置错误: %s", exc)
+        raise SystemExit(2) from exc
     except SystemExit:
         raise
     except Exception as exc:
-        logging.getLogger(__name__).exception("执行失败")
-        print(f"执行失败: {exc}", file=sys.stderr)
+        logger.exception("执行失败: %s", exc)
         raise SystemExit(1) from exc
+
+    logger.info("%s v%s 正常退出 code=%s", APP_NAME, __version__, code)
     raise SystemExit(code)
 
 

@@ -7,6 +7,9 @@ dist/
 build/
 .received/
 received/
+logs/
 config.yaml
 examples/sample-data/
+examples/config.send.yaml
+examples/config.receive.yaml
 .DS_Store

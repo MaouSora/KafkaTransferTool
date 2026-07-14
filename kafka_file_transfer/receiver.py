@@ -48,7 +48,7 @@ class FileReceiver:
         self.poll_timeout_ms = poll_timeout_ms
 
         config = {
-            "bootstrap_servers": brokers.split(","),
+            "bootstrap_servers": [b.strip() for b in brokers.split(",") if b.strip()],
             "group_id": group_id,
             "auto_offset_reset": auto_offset_reset,
             "enable_auto_commit": False,
@@ -59,12 +59,21 @@ class FileReceiver:
         }
         if extra_consumer_config:
             config.update(extra_consumer_config)
+        logger.info(
+            "初始化 Consumer brokers=%s topic=%s group_id=%s auto_offset_reset=%s output_dir=%s",
+            self.brokers,
+            self.topic,
+            self.group_id,
+            auto_offset_reset,
+            self.output_dir,
+        )
         self._consumer = KafkaConsumer(topic, **config)
         self._assemblers: dict[str, FileAssembler] = {}
         self._metas: dict[str, FileMeta] = {}
         self._completed: set[str] = set()
 
     def close(self) -> None:
+        logger.info("关闭 Consumer，清理未完成组装任务 count=%s", len(self._assemblers))
         for assembler in self._assemblers.values():
             assembler.abort()
         self._assemblers.clear()
@@ -153,13 +162,27 @@ class FileReceiver:
                 logger.warning("收到未知 file_id 的分片，已忽略: %s", file_id)
                 return None
             index = int(headers.get(HEADER_CHUNK_INDEX, "-1"))
-            assembler.add_chunk(index, message.value or b"")
-            logger.debug(
-                "收到分片 %s/%s file_id=%s",
-                index + 1,
-                assembler.meta.total_chunks,
-                file_id,
-            )
+            payload = message.value or b""
+            assembler.add_chunk(index, payload)
+            total = assembler.meta.total_chunks
+            done = index + 1
+            if done == total or done == 1 or done % max(1, total // 10) == 0:
+                logger.info(
+                    "接收进度 %s/%s (%.1f%%) file=%s bytes=%s",
+                    done,
+                    total,
+                    (done / total) * 100 if total else 100.0,
+                    assembler.meta.filename,
+                    len(payload),
+                )
+            else:
+                logger.debug(
+                    "收到分片 %s/%s file_id=%s bytes=%s",
+                    done,
+                    total,
+                    file_id,
+                    len(payload),
+                )
             return None
 
         if msg_type == MSG_COMPLETE:
