@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.received/
+received/
+logs/
+settings.py
+examples/sample-data/
+examples/settings_send.py
+examples/settings_receive.py
+.DS_Store

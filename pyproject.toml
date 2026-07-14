@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kafka-file-transfer"
+dynamic = ["version"]
+description = "通过 Kafka 指定 Topic 发送/接收 zip、h5 等常见文件"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "kafka-python>=2.0.2",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "kafka_file_transfer.version.__version__"}
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+kafka-file-transfer = "kafka_file_transfer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kafka_file_transfer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
